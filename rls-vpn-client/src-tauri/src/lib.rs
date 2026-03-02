@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::sync::Mutex;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{State, Manager};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
