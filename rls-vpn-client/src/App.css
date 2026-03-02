@@ -24,7 +24,7 @@ body, html, #root {
   height: 100vh;
   padding: 0;
   overflow-y: auto;
-  background: linear-gradient(160deg, #0d1117 0%, #161b22 100%);
+  background: #0d1117;
 }
 
 /* HEADER */
@@ -80,19 +80,26 @@ body, html, #root {
   border-radius: 16px;
   text-align: center;
   transition: all 0.4s ease;
-  position: relative;
-  overflow: hidden;
 }
 
 .status-card.connected {
-  background: linear-gradient(135deg, rgba(0,255,136,0.08) 0%, rgba(0,212,255,0.08) 100%);
-  border: 1px solid rgba(0,255,136,0.25);
-  box-shadow: 0 0 40px rgba(0,255,136,0.08);
+  background: rgba(0, 255, 136, 0.07);
+  border: 1px solid rgba(0, 255, 136, 0.22);
 }
 
 .status-card.disconnected {
-  background: linear-gradient(135deg, rgba(255,68,102,0.08) 0%, rgba(255,100,0,0.05) 100%);
-  border: 1px solid rgba(255,68,102,0.2);
+  background: rgba(255, 68, 102, 0.07);
+  border: 1px solid rgba(255, 68, 102, 0.18);
+}
+
+.status-card.connecting {
+  background: rgba(255, 170, 0, 0.07);
+  border: 1px solid rgba(255, 170, 0, 0.22);
+}
+
+.status-card.unconfigured {
+  background: rgba(139, 148, 158, 0.06);
+  border: 1px solid rgba(139, 148, 158, 0.15);
 }
 
 .status-icon {
@@ -106,8 +113,10 @@ body, html, #root {
   margin-bottom: 6px;
 }
 
-.connected .status-text { color: #00ff88; }
+.connected .status-text    { color: #00ff88; }
 .disconnected .status-text { color: #ff4466; }
+.connecting .status-text   { color: #ffaa00; }
+.unconfigured .status-text { color: #8b949e; }
 
 .status-sub {
   font-size: 13px;
@@ -132,52 +141,55 @@ body, html, #root {
   font-weight: 600;
 }
 
-/* BOTÕES PRINCIPAIS */
+/* BOTÕES — flat, sem gradients */
 .action-area {
   padding: 0 16px 16px;
 }
 
-.btn-connect, .btn-disconnect, .btn-loading {
+.btn-action {
   width: 100%;
-  padding: 14px;
-  border-radius: 12px;
-  font-size: 15px;
-  font-weight: 700;
+  padding: 13px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
   border: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
-  letter-spacing: 0.5px;
-  transition: all 0.2s ease;
+  letter-spacing: 0.3px;
+  transition: opacity 0.15s ease, background 0.15s ease;
 }
 
-.btn-connect {
-  background: linear-gradient(135deg, #00d4ff 0%, #00ff88 100%);
-  color: #0d1117;
+.btn-action:hover:not(:disabled) {
+  opacity: 0.82;
 }
 
-.btn-connect:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(0, 212, 255, 0.35);
-}
-
-.btn-disconnect {
-  background: linear-gradient(135deg, #ff4466 0%, #ff6600 100%);
+/* Configurar placa de rede — azul */
+.btn-setup {
+  background: #1a6fd4;
   color: #ffffff;
 }
 
-.btn-disconnect:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(255, 68, 102, 0.35);
+/* Ligar — verde */
+.btn-connect {
+  background: #16a34a;
+  color: #ffffff;
 }
 
+/* Desligar — vermelho */
+.btn-disconnect {
+  background: #c0392b;
+  color: #ffffff;
+}
+
+/* Loading / desactivado */
 .btn-loading {
   background: rgba(255,255,255,0.06);
   color: #8b949e;
   cursor: not-allowed;
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.09);
 }
 
 /* INFO ROWS */
@@ -259,32 +271,32 @@ body, html, #root {
 .btn-save {
   padding: 10px;
   border-radius: 8px;
-  background: rgba(0, 212, 255, 0.15);
-  border: 1px solid rgba(0, 212, 255, 0.3);
+  background: rgba(0, 212, 255, 0.12);
+  border: 1px solid rgba(0, 212, 255, 0.28);
   color: #00d4ff;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s;
 }
 
 .btn-save:hover {
-  background: rgba(0, 212, 255, 0.25);
+  background: rgba(0, 212, 255, 0.22);
 }
 
 .btn-reset {
   padding: 8px;
   border-radius: 8px;
-  background: rgba(255, 68, 102, 0.08);
-  border: 1px solid rgba(255, 68, 102, 0.25);
+  background: rgba(255, 68, 102, 0.07);
+  border: 1px solid rgba(255, 68, 102, 0.22);
   color: #ff4466;
   font-size: 12px;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s;
 }
 
 .btn-reset:hover {
-  background: rgba(255, 68, 102, 0.18);
+  background: rgba(255, 68, 102, 0.15);
 }
 
 /* LOG */

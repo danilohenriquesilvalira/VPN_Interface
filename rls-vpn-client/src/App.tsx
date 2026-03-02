@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Shield, ShieldOff, Settings, Wifi, WifiOff, ChevronDown, ChevronUp, Loader } from "lucide-react";
+import {
+  Shield, ShieldOff, Settings, Wifi, WifiOff,
+  ChevronDown, ChevronUp, Loader, Network,
+} from "lucide-react";
 import "./App.css";
 
 interface VpnConfig {
@@ -17,12 +20,21 @@ interface VpnStatus {
   local_ip?: string;
   message: string;
   softether_ready: boolean;
+  connection_ready: boolean;
+  vpn_state: string; // "not_installed" | "not_configured" | "disconnected" | "connecting" | "connected"
 }
 
 function App() {
   const [config, setConfig] = useState<VpnConfig | null>(null);
-  const [status, setStatus] = useState<VpnStatus>({ connected: false, message: "A iniciar...", softether_ready: false });
+  const [status, setStatus] = useState<VpnStatus>({
+    connected: false,
+    message: "A iniciar...",
+    softether_ready: false,
+    connection_ready: false,
+    vpn_state: "not_installed",
+  });
   const [loading, setLoading] = useState(false);
+  const [loadingMsg, setLoadingMsg] = useState("");
   const [installing, setInstalling] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [logMessages, setLogMessages] = useState<string[]>([]);
@@ -33,17 +45,25 @@ function App() {
     setLogMessages(prev => [`[${time}] ${msg}`, ...prev].slice(0, 20));
   };
 
+  const refreshStatus = async () => {
+    try {
+      const s = await invoke<VpnStatus>("get_status");
+      setStatus(s);
+    } catch (_) {}
+  };
+
   useEffect(() => {
     invoke<VpnConfig>("get_default_config").then(cfg => {
       setConfig(cfg);
       setEditConfig(cfg);
     });
-    // Verificar e instalar SoftEther automaticamente na primeira execução
+
     const ensureReady = async () => {
       setInstalling(true);
       try {
         const msg = await invoke<string>("check_and_install_softether");
         addLog(msg);
+        await refreshStatus();
       } catch (e: any) {
         addLog(`Aviso: ${e}`);
       } finally {
@@ -54,42 +74,61 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const check = async () => {
-      const s = await invoke<VpnStatus>("get_status");
-      setStatus(s);
-    };
-    check();
-    const interval = setInterval(check, 4000);
+    refreshStatus();
+    const interval = setInterval(refreshStatus, 4000);
     return () => clearInterval(interval);
   }, []);
 
-  const handleConnect = async () => {
+  // Passo 1: cria NIC + conta VPN
+  const handleSetup = async () => {
     if (!config) return;
     setLoading(true);
-    addLog("A criar adaptador e ligar à rede RLS...");
+    setLoadingMsg("A configurar placa de rede...");
+    addLog("A criar adaptador de rede e conta VPN...");
     try {
-      const msg = await invoke<string>("connect", { config });
+      const msg = await invoke<string>("setup_connection", { config });
       addLog(msg);
-      // Não definir status manualmente — o polling get_status() confirma o estado real
+      await refreshStatus();
     } catch (e: any) {
       addLog(`Erro: ${e}`);
     } finally {
       setLoading(false);
+      setLoadingMsg("");
+    }
+  };
+
+  // Passo 2: liga (AccountConnect)
+  const handleConnect = async () => {
+    if (!config) return;
+    setLoading(true);
+    setLoadingMsg("A ligar...");
+    addLog("A ligar à rede RLS Automação...");
+    try {
+      const msg = await invoke<string>("connect", { config });
+      addLog(msg);
+      await refreshStatus();
+    } catch (e: any) {
+      addLog(`Erro: ${e}`);
+    } finally {
+      setLoading(false);
+      setLoadingMsg("");
     }
   };
 
   const handleDisconnect = async () => {
     if (!config) return;
     setLoading(true);
+    setLoadingMsg("A desligar...");
     addLog("A desligar...");
     try {
       const msg = await invoke<string>("disconnect", { config });
       addLog(msg);
-      setStatus(prev => ({ ...prev, connected: false, message: "Desligado" }));
+      await refreshStatus();
     } catch (e: any) {
       addLog(`Erro: ${e}`);
     } finally {
       setLoading(false);
+      setLoadingMsg("");
     }
   };
 
@@ -100,6 +139,25 @@ function App() {
       addLog("Configurações guardadas.");
     }
   };
+
+  // Classe e rótulo do status card baseados no estado real do SoftEther
+  const statusClass =
+    status.vpn_state === "connected" ? "connected"
+    : status.vpn_state === "connecting" ? "connecting"
+    : status.vpn_state === "not_configured" ? "unconfigured"
+    : "disconnected";
+
+  const statusLabel =
+    status.vpn_state === "connected" ? "LIGADO"
+    : status.vpn_state === "connecting" ? "A LIGAR..."
+    : status.vpn_state === "not_configured" ? "NÃO CONFIGURADO"
+    : "DESLIGADO";
+
+  const statusIconColor =
+    status.vpn_state === "connected" ? "#00ff88"
+    : status.vpn_state === "connecting" ? "#ffaa00"
+    : status.vpn_state === "not_configured" ? "#8b949e"
+    : "#ff4466";
 
   return (
     <div className="app">
@@ -116,15 +174,14 @@ function App() {
         <div className="version">v1.0.0</div>
       </div>
 
-      <div className={`status-card ${status.connected ? "connected" : "disconnected"}`}>
+      {/* STATUS CARD — reflecte o estado real do SoftEther */}
+      <div className={`status-card ${statusClass}`}>
         <div className="status-icon">
-          {status.connected
-            ? <Wifi size={52} color="#00ff88" />
-            : <WifiOff size={52} color="#ff4466" />}
+          {status.vpn_state === "connected"
+            ? <Wifi size={52} color={statusIconColor} />
+            : <WifiOff size={52} color={statusIconColor} />}
         </div>
-        <div className="status-text">
-          {status.connected ? "LIGADO" : "DESLIGADO"}
-        </div>
+        <div className="status-text">{statusLabel}</div>
         <div className="status-sub">{status.message}</div>
         {status.connected && (
           <div className="network-info">
@@ -136,26 +193,51 @@ function App() {
         )}
       </div>
 
+      {/* ÁREA DE ACÇÃO — botão correcto para cada estado */}
       <div className="action-area">
         {installing ? (
-          <button className="btn-loading" disabled>
+          <button className="btn-action btn-loading" disabled>
             <Loader size={18} className="spin" />
             A instalar componentes VPN...
           </button>
+
         ) : loading ? (
-          <button className="btn-loading" disabled>
+          <button className="btn-action btn-loading" disabled>
             <Loader size={18} className="spin" />
-            {status.connected ? "A desligar..." : "A ligar..."}
+            {loadingMsg}
           </button>
+
+        ) : !status.softether_ready ? (
+          <button className="btn-action btn-loading" disabled>
+            SoftEther não disponível
+          </button>
+
+        ) : !status.connection_ready ? (
+          /* PASSO 1: criar placa de rede + conta */
+          <button className="btn-action btn-setup" onClick={handleSetup}>
+            <Network size={18} />
+            Configurar Placa de Rede VPN
+          </button>
+
+        ) : status.vpn_state === "connecting" ? (
+          /* Estado intermédio do SoftEther */
+          <button className="btn-action btn-loading" disabled>
+            <Loader size={18} className="spin" />
+            A estabelecer ligação...
+          </button>
+
         ) : status.connected ? (
-          <button className="btn-disconnect" onClick={handleDisconnect}>
+          /* PASSO 3: desligar */
+          <button className="btn-action btn-disconnect" onClick={handleDisconnect}>
             <ShieldOff size={18} />
             Desligar
           </button>
+
         ) : (
-          <button className="btn-connect" onClick={handleConnect}>
+          /* PASSO 2: ligar */
+          <button className="btn-action btn-connect" onClick={handleConnect}>
             <Shield size={18} />
-            Ligar à Rede RLS
+            Ligar
           </button>
         )}
       </div>
@@ -170,6 +252,10 @@ function App() {
             <span className="info-label">Utilizador</span>
             <span className="info-value">{config.username} @ {config.hub}</span>
           </div>
+          <div className="info-row">
+            <span className="info-label">Conta VPN</span>
+            <span className="info-value">{config.account_name}</span>
+          </div>
         </>
       )}
 
@@ -183,33 +269,58 @@ function App() {
         <div className="settings-panel">
           <div className="field">
             <label>Servidor</label>
-            <input value={editConfig.host} onChange={e => setEditConfig({ ...editConfig, host: e.target.value })} />
+            <input
+              value={editConfig.host}
+              onChange={e => setEditConfig({ ...editConfig, host: e.target.value })}
+            />
           </div>
           <div className="field">
             <label>Porta</label>
-            <input type="number" value={editConfig.port} onChange={e => setEditConfig({ ...editConfig, port: Number(e.target.value) })} />
+            <input
+              type="number"
+              value={editConfig.port}
+              onChange={e => setEditConfig({ ...editConfig, port: Number(e.target.value) })}
+            />
           </div>
           <div className="field">
             <label>Hub</label>
-            <input value={editConfig.hub} onChange={e => setEditConfig({ ...editConfig, hub: e.target.value })} />
+            <input
+              value={editConfig.hub}
+              onChange={e => setEditConfig({ ...editConfig, hub: e.target.value })}
+            />
           </div>
           <div className="field">
             <label>Utilizador</label>
-            <input value={editConfig.username} onChange={e => setEditConfig({ ...editConfig, username: e.target.value })} />
+            <input
+              value={editConfig.username}
+              onChange={e => setEditConfig({ ...editConfig, username: e.target.value })}
+            />
           </div>
           <div className="field">
             <label>Password</label>
-            <input type="password" value={editConfig.password} onChange={e => setEditConfig({ ...editConfig, password: e.target.value })} />
+            <input
+              type="password"
+              value={editConfig.password}
+              onChange={e => setEditConfig({ ...editConfig, password: e.target.value })}
+            />
           </div>
           <button className="btn-save" onClick={saveSettings}>Guardar</button>
-          <button className="btn-reset" onClick={async () => {
-            if (!config) return;
-            addLog("A fazer reset completo...");
-            try {
-              const msg = await invoke<string>("clean_reset", { config });
-              addLog(msg);
-            } catch (e: any) { addLog(`Erro: ${e}`); }
-          }}>Limpar instalação (reset)</button>
+          <button
+            className="btn-reset"
+            onClick={async () => {
+              if (!config) return;
+              addLog("A fazer reset completo...");
+              try {
+                const msg = await invoke<string>("clean_reset", { config });
+                addLog(msg);
+                await refreshStatus();
+              } catch (e: any) {
+                addLog(`Erro: ${e}`);
+              }
+            }}
+          >
+            Limpar instalação (reset)
+          </button>
         </div>
       )}
 
