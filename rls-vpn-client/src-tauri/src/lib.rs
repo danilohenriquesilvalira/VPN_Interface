@@ -10,7 +10,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // Nome do adaptador virtual — aparece no Painel de Controlo de Rede
-const NIC_NAME: &str = "VPN RLS Automacao";
+const NIC_NAME: &str = "RLS Automacao";
 
 struct VpnState {
     connected: Mutex<bool>,
@@ -128,12 +128,21 @@ fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-// Renomear adaptador virtual para "VPN RLS Automacao" via PowerShell
+// Remover adaptadores SoftEther antigos/órfãos (ex: "VPN", "VPN Client", "VPN RLS Automacao")
+#[cfg(windows)]
+fn cleanup_old_nics() {
+    let old_names = ["VPN", "VPN Client", "VPN RLS Automacao"];
+    for name in &old_names {
+        let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicDelete", name]);
+    }
+}
+
+// Renomear adaptador virtual para NIC_NAME via PowerShell
 #[cfg(windows)]
 fn rename_nic() {
     // Tenta renomear de qualquer nome que o SoftEther tenha criado
     let script = format!(
-        "Get-NetAdapter | Where-Object {{ $_.InterfaceDescription -like '*SoftEther*' -or $_.Name -eq 'VPN' }} | Rename-NetAdapter -NewName '{}'",
+        "Get-NetAdapter | Where-Object {{ $_.InterfaceDescription -like '*SoftEther*' -or $_.Name -eq 'VPN' -or $_.Name -eq 'VPN Client' }} | Rename-NetAdapter -NewName '{}'",
         NIC_NAME
     );
     let _ = Command::new("powershell")
@@ -237,10 +246,24 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
+    // Limpar adaptadores antigos/órfãos do SoftEther
+    #[cfg(windows)]
+    cleanup_old_nics();
+
     // Criar adaptador virtual com nome RLS (ignora erro se já existe)
-    let _ = run_vpncmd(&[
+    let nic_result = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "NicCreate", NIC_NAME,
+    ]);
+    if let Err(ref e) = nic_result {
+        // Não é fatal — pode já existir
+        let _ = e;
+    }
+
+    // Activar adaptador explicitamente
+    let _ = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "NicEnable", NIC_NAME,
     ]);
 
     // Criar conta apontada para o adaptador RLS
