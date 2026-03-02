@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::sync::Mutex;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{State, Manager};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -71,7 +71,7 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
     let installer_path = app_handle
         .path()
         .resource_dir()
-        .map_err(|e| e.to_string())?
+        .map_err(|e: tauri::Error| e.to_string())?
         .join("se_client.exe");
 
     if !installer_path.exists() {
