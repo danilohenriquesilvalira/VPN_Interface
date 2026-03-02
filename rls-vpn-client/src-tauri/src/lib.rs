@@ -1,10 +1,18 @@
 use std::process::Command;
 use std::sync::Mutex;
+use std::path::PathBuf;
 use tauri::State;
 
-// Estado global da ligação
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+// Flag Windows para ocultar janela CMD
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 struct VpnState {
     connected: Mutex<bool>,
+    process_id: Mutex<Option<u32>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -33,19 +41,76 @@ impl Default for VpnConfig {
 #[derive(serde::Serialize)]
 pub struct VpnStatus {
     pub connected: bool,
+    pub local_ip: Option<String>,
     pub message: String,
 }
 
-// Verificar se vpncmd está disponível
-fn find_vpncmd() -> Option<String> {
-    let candidates = vec![
-        "vpncmd",
+// Localizar vpncmd: primeiro dentro da app (bundled), depois no sistema
+fn find_vpncmd() -> Option<PathBuf> {
+    // 1. Bundled junto com a app (preferido)
+    let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let bundled = exe_dir.join("vpncmd.exe");
+    if bundled.exists() {
+        return Some(bundled);
+    }
+
+    // 2. SoftEther Client instalado no sistema (fallback)
+    let system_paths = [
         "C:\\Program Files\\SoftEther VPN Client\\vpncmd.exe",
         "C:\\Program Files (x86)\\SoftEther VPN Client\\vpncmd.exe",
+        "vpncmd.exe",
     ];
-    for path in candidates {
-        if Command::new(path).arg("/VERSION").output().is_ok() {
-            return Some(path.to_string());
+    for path in &system_paths {
+        if PathBuf::from(path).exists() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
+// Executar vpncmd sem janela visível
+fn run_vpncmd(args: &[&str]) -> Result<String, String> {
+    let vpncmd = find_vpncmd()
+        .ok_or_else(|| "vpncmd.exe não encontrado. Instala o SoftEther VPN Client.".to_string())?;
+
+    #[cfg(windows)]
+    let output = Command::new(&vpncmd)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
+
+    #[cfg(not(windows))]
+    let output = Command::new(&vpncmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !stderr.is_empty() {
+        Ok(format!("{}\n{}", stdout, stderr))
+    } else {
+        Ok(stdout)
+    }
+}
+
+// Verificar IP da ligação VPN (adaptador virtual SoftEther)
+#[cfg(windows)]
+fn get_vpn_ip() -> Option<String> {
+    let output = Command::new("ipconfig")
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Procurar IP na gama da rede RLS
+    for line in text.lines() {
+        if line.contains("192.168.222") && line.contains("IPv4") {
+            if let Some(ip) = line.split(':').last() {
+                return Some(ip.trim().to_string());
+            }
         }
     }
     None
@@ -58,19 +123,21 @@ fn get_default_config() -> VpnConfig {
 
 #[tauri::command]
 fn get_status(state: State<VpnState>) -> VpnStatus {
-    let connected = *state.connected.lock().unwrap();
-
-    // Verificar se o adaptador VPN está ativo (Windows)
-    #[cfg(target_os = "windows")]
+    #[cfg(windows)]
     {
-        let output = Command::new("ipconfig").output();
-        if let Ok(out) = output {
-            let text = String::from_utf8_lossy(&out.stdout);
-            let active = text.contains("VPN") || text.contains("192.168.222");
+        // Verificar estado real via vpncmd
+        if let Ok(output) = run_vpncmd(&[
+            "localhost", "/CLIENT", "/CMD", "AccountStatusGet", "RLS_Automacao"
+        ]) {
+            let connected = output.contains("Connected")
+                || output.contains("Session Status|Connection Established");
+            let local_ip = get_vpn_ip();
+            *state.connected.lock().unwrap() = connected;
             return VpnStatus {
-                connected: active,
-                message: if active {
-                    "Ligado à rede RLS".to_string()
+                connected,
+                local_ip,
+                message: if connected {
+                    "Ligado à rede RLS Automação".to_string()
                 } else {
                     "Desligado".to_string()
                 },
@@ -78,70 +145,71 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         }
     }
 
+    let connected = *state.connected.lock().unwrap();
     VpnStatus {
         connected,
-        message: if connected {
-            "Ligado à rede RLS".to_string()
-        } else {
-            "Desligado".to_string()
-        },
+        local_ip: None,
+        message: if connected { "Ligado".to_string() } else { "Desligado".to_string() },
     }
 }
 
 #[tauri::command]
 fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> {
-    let vpncmd = find_vpncmd().ok_or(
-        "SoftEther VPN Client não encontrado. Por favor instala o SoftEther VPN Client.".to_string()
-    )?;
+    // 1. Garantir que o serviço SoftEther Client está activo
+    #[cfg(windows)]
+    {
+        let _ = Command::new("sc")
+            .args(&["start", "SevpnClient"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
 
-    // Criar conta VPN (ignora erro se já existir)
-    let create_cmd = format!(
-        "AccountCreate {} /SERVER:{}:{} /HUB:{} /USERNAME:{} /NICNAME:VPN",
-        config.account_name, config.host, config.port, config.hub, config.username
-    );
-    let _ = Command::new(&vpncmd)
-        .args(&["/CLIENT", "localhost", "/CMD", &create_cmd])
-        .output();
+    // 2. Criar conta (ignora erro se já existir)
+    let _ = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "AccountCreate", &config.account_name,
+        &format!("/SERVER:{}:{}", config.host, config.port),
+        &format!("/HUB:{}", config.hub),
+        &format!("/USERNAME:{}", config.username),
+        "/NICNAME:VPN",
+    ]);
 
-    // Definir password
-    let pass_cmd = format!(
-        "AccountPasswordSet {} /PASSWORD:{} /TYPE:standard",
-        config.account_name, config.password
-    );
-    let _ = Command::new(&vpncmd)
-        .args(&["/CLIENT", "localhost", "/CMD", &pass_cmd])
-        .output();
+    // 3. Definir tipo de autenticação e password
+    let _ = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "AccountPasswordSet", &config.account_name,
+        &format!("/PASSWORD:{}", config.password),
+        "/TYPE:standard",
+    ]);
 
-    // Ligar
-    let connect_cmd = format!("AccountConnect {}", config.account_name);
-    let output = Command::new(&vpncmd)
-        .args(&["/CLIENT", "localhost", "/CMD", &connect_cmd])
-        .output()
-        .map_err(|e| e.to_string())?;
+    // 4. Ligar
+    let result = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "AccountConnect", &config.account_name,
+    ])?;
 
-    let result = String::from_utf8_lossy(&output.stdout).to_string();
-
-    if output.status.success() || result.contains("completed successfully") {
+    if result.contains("completed successfully") || result.contains("The command completed") {
         *state.connected.lock().unwrap() = true;
         Ok("Ligado com sucesso à rede RLS Automação!".to_string())
+    } else if result.contains("already") || result.contains("já está") {
+        *state.connected.lock().unwrap() = true;
+        Ok("Já estava ligado à rede RLS Automação.".to_string())
     } else {
-        Err(format!("Erro ao ligar: {}", result))
+        Err(format!("Resposta do servidor: {}", result.trim()))
     }
 }
 
 #[tauri::command]
 fn disconnect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> {
-    let vpncmd = find_vpncmd().ok_or("SoftEther VPN Client não encontrado.".to_string())?;
-
-    let disconnect_cmd = format!("AccountDisconnect {}", config.account_name);
-    let output = Command::new(&vpncmd)
-        .args(&["/CLIENT", "localhost", "/CMD", &disconnect_cmd])
-        .output()
-        .map_err(|e| e.to_string())?;
+    let result = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "AccountDisconnect", &config.account_name,
+    ])?;
 
     *state.connected.lock().unwrap() = false;
 
-    if output.status.success() {
+    if result.contains("completed successfully") || result.contains("The command completed") {
         Ok("Desligado com sucesso.".to_string())
     } else {
         Ok("Desligado.".to_string())
@@ -154,12 +222,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(VpnState {
             connected: Mutex::new(false),
+            process_id: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             get_default_config,
             get_status,
             connect,
-            disconnect
+            disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -11,9 +11,6 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: rls-vpn-client
 
     steps:
       - name: Checkout
@@ -27,7 +24,22 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install dependencies
+      - name: Install SoftEther VPN Client (para extrair vpncmd.exe)
+        shell: powershell
+        run: |
+          $url = "https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.42-9798-rtm/softether-vpnclient-v4.42-9798-rtm-2023.06.30-windows-x86_x64-intel.exe"
+          Invoke-WebRequest -Uri $url -OutFile "se_client.exe"
+          Start-Process -FilePath "se_client.exe" -ArgumentList "/SILENT" -Wait
+          $vpncmd = "C:\Program Files\SoftEther VPN Client\vpncmd.exe"
+          if (Test-Path $vpncmd) {
+            Copy-Item $vpncmd -Destination "rls-vpn-client\src-tauri\vpncmd.exe"
+            echo "vpncmd.exe copiado com sucesso"
+          } else {
+            echo "AVISO: vpncmd.exe nao encontrado, o utilizador precisa instalar SoftEther Client"
+          }
+
+      - name: Install frontend dependencies
+        working-directory: rls-vpn-client
         run: npm install
 
       - name: Build Tauri app
@@ -37,18 +49,18 @@ jobs:
         with:
           projectPath: rls-vpn-client
           tagName: v__VERSION__
-          releaseName: "RLS Automação VPN v__VERSION__"
+          releaseName: "RLS Automacao VPN v__VERSION__"
           releaseBody: |
-            ## RLS Automação VPN Client
+            ## RLS Automacao VPN Client
 
-            ### Instalação
+            ### Instalacao (simples)
             1. Descarrega o ficheiro `.msi` abaixo
-            2. Instala o **SoftEther VPN Client** (necessário): https://www.softether.org/5-download
-            3. Corre o instalador `RLS Automação VPN_x.x.x_x64.msi`
-            4. Abre a app e clica **Ligar**
+            2. Instala (duplo clique)
+            3. Abre a app RLS Automacao VPN
+            4. Clica **Ligar**
 
             ### Requisitos
             - Windows 10/11 (64-bit)
-            - SoftEther VPN Client instalado
+            - Estar ligado ao ZeroTier (rede b9a18a606f6713e2)
           releaseDraft: false
           prerelease: false
