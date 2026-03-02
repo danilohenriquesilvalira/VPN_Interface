@@ -1,0 +1,51 @@
+name: Build RLS VPN Client
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rls-vpn-client
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: rls-vpn-client
+          tagName: v__VERSION__
+          releaseName: "RLS Automação VPN v__VERSION__"
+          releaseBody: |
+            ## RLS Automação VPN Client
+
+            ### Instalação
+            1. Descarrega o ficheiro `.msi` abaixo
+            2. Instala o **SoftEther VPN Client** (necessário): https://www.softether.org/5-download
+            3. Corre o instalador `RLS Automação VPN_x.x.x_x64.msi`
+            4. Abre a app e clica **Ligar**
+
+            ### Requisitos
+            - Windows 10/11 (64-bit)
+            - SoftEther VPN Client instalado
+          releaseDraft: false
+          prerelease: false
