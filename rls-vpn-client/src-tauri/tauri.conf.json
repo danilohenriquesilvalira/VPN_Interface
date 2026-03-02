@@ -34,7 +34,7 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "vpncmd.exe": "./"
+      "se_client.exe": "./"
     },
     "windows": {
       "nsis": {

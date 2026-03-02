@@ -14,13 +14,16 @@ interface VpnConfig {
 
 interface VpnStatus {
   connected: boolean;
+  local_ip?: string;
   message: string;
+  softether_ready: boolean;
 }
 
 function App() {
   const [config, setConfig] = useState<VpnConfig | null>(null);
-  const [status, setStatus] = useState<VpnStatus>({ connected: false, message: "A verificar..." });
+  const [status, setStatus] = useState<VpnStatus>({ connected: false, message: "A iniciar...", softether_ready: false });
   const [loading, setLoading] = useState(false);
+  const [installing, setInstalling] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [logMessages, setLogMessages] = useState<string[]>([]);
   const [editConfig, setEditConfig] = useState<VpnConfig | null>(null);
@@ -35,6 +38,19 @@ function App() {
       setConfig(cfg);
       setEditConfig(cfg);
     });
+    // Verificar e instalar SoftEther automaticamente na primeira execução
+    const ensureReady = async () => {
+      setInstalling(true);
+      try {
+        const msg = await invoke<string>("check_and_install_softether");
+        addLog(msg);
+      } catch (e: any) {
+        addLog(`Aviso: ${e}`);
+      } finally {
+        setInstalling(false);
+      }
+    };
+    ensureReady();
   }, []);
 
   useEffect(() => {
@@ -54,7 +70,7 @@ function App() {
     try {
       const msg = await invoke<string>("connect", { config });
       addLog(msg);
-      setStatus({ connected: true, message: "Ligado à rede RLS" });
+      setStatus(prev => ({ ...prev, connected: true, message: "Ligado à rede RLS" }));
     } catch (e: any) {
       addLog(`Erro: ${e}`);
     } finally {
@@ -69,7 +85,7 @@ function App() {
     try {
       const msg = await invoke<string>("disconnect", { config });
       addLog(msg);
-      setStatus({ connected: false, message: "Desligado" });
+      setStatus(prev => ({ ...prev, connected: false, message: "Desligado" }));
     } catch (e: any) {
       addLog(`Erro: ${e}`);
     } finally {
@@ -119,7 +135,12 @@ function App() {
       </div>
 
       <div className="action-area">
-        {loading ? (
+        {installing ? (
+          <button className="btn-loading" disabled>
+            <Loader size={18} className="spin" />
+            A instalar componentes VPN...
+          </button>
+        ) : loading ? (
           <button className="btn-loading" disabled>
             <Loader size={18} className="spin" />
             {status.connected ? "A desligar..." : "A ligar..."}

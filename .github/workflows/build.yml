@@ -24,38 +24,6 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache vpncmd.exe
-        id: cache-vpncmd
-        uses: actions/cache@v4
-        with:
-          path: rls-vpn-client/src-tauri/vpncmd.exe
-          key: vpncmd-softether-v4.42-9798
-
-      - name: Extrair vpncmd.exe (7-zip, sem instalar SoftEther)
-        if: steps.cache-vpncmd.outputs.cache-hit != 'true'
-        shell: powershell
-        run: |
-          $url = "https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.42-9798-rtm/softether-vpnclient-v4.42-9798-rtm-2023.06.30-windows-x86_x64-intel.exe"
-          Write-Host "A descarregar SoftEther..."
-          Invoke-WebRequest -Uri $url -OutFile "se_client.exe"
-          Write-Host "A extrair vpncmd.exe com 7-zip..."
-          & "C:\Program Files\7-Zip\7z.exe" e "se_client.exe" "vpncmd.exe" -o"extracted" -y
-          if (Test-Path "extracted\vpncmd.exe") {
-            Copy-Item "extracted\vpncmd.exe" "rls-vpn-client\src-tauri\vpncmd.exe"
-            Write-Host "vpncmd.exe extraido com sucesso"
-          } else {
-            Write-Host "7-zip nao conseguiu extrair, a tentar extraccao alternativa..."
-            & "C:\Program Files\7-Zip\7z.exe" x "se_client.exe" -o"extracted2" -y
-            $found = Get-ChildItem -Path "extracted2" -Filter "vpncmd.exe" -Recurse | Select-Object -First 1
-            if ($found) {
-              Copy-Item $found.FullName "rls-vpn-client\src-tauri\vpncmd.exe"
-              Write-Host "vpncmd.exe encontrado e copiado"
-            } else {
-              Write-Error "vpncmd.exe nao encontrado no instalador"
-              exit 1
-            }
-          }
-
       - name: Cache Rust
         uses: actions/cache@v4
         with:
@@ -64,6 +32,30 @@ jobs:
             ~/.cargo/git
             rls-vpn-client/src-tauri/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('rls-vpn-client/src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Cache SoftEther installer
+        id: cache-se
+        uses: actions/cache@v4
+        with:
+          path: se_client.exe
+          key: softether-vpnclient-v4.42-9798
+
+      - name: Download SoftEther installer
+        if: steps.cache-se.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          $url = "https://github.com/SoftEtherVPN/SoftEtherVPN_Stable/releases/download/v4.42-9798-rtm/softether-vpnclient-v4.42-9798-rtm-2023.06.30-windows-x86_x64-intel.exe"
+          Write-Host "A descarregar SoftEther VPN Client..."
+          Invoke-WebRequest -Uri $url -OutFile "se_client.exe" -UseBasicParsing
+          Write-Host "Download concluido: $((Get-Item se_client.exe).Length) bytes"
+
+      - name: Copiar installer para resources da app
+        shell: powershell
+        run: |
+          # O instalador do SoftEther vai bundled na app e é instalado silenciosamente na 1ª execução
+          Copy-Item "se_client.exe" "rls-vpn-client\src-tauri\se_client.exe"
+          Write-Host "Installer copiado para resources: $((Get-Item 'rls-vpn-client\src-tauri\se_client.exe').Length) bytes"
 
       - name: Install frontend dependencies
         working-directory: rls-vpn-client
@@ -80,14 +72,15 @@ jobs:
           releaseBody: |
             ## RLS Automacao VPN Client
 
-            ### Instalacao (simples)
+            ### Instalacao (um so passo)
             1. Descarrega o ficheiro `.msi` abaixo
-            2. Instala (duplo clique)
-            3. Abre a app RLS Automacao VPN
-            4. Clica **Ligar**
+            2. Instala com duplo clique (pode pedir permissao de administrador)
+            3. Abre a app **RLS Automacao VPN**
+            4. Na primeira execucao instala automaticamente os componentes necessarios
+            5. Clica **Ligar**
 
             ### Requisitos
             - Windows 10/11 (64-bit)
-            - Estar ligado ao ZeroTier (rede b9a18a606f6713e2)
+            - Ligacao ao ZeroTier (rede b9a18a606f6713e2)
           releaseDraft: false
           prerelease: false
