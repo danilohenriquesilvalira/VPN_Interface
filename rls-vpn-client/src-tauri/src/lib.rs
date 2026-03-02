@@ -239,14 +239,17 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         "localhost", "/CLIENT", "/CMD", "AccountStatusGet", "RLS_Automacao",
     ]).unwrap_or_default();
 
-    // Só "Connection Established" confirma ligação real.
-    // NÃO usar "Connected" — é substring de "Disconnected".
-    let connected = output.contains("Connection Established");
+    // Verificação 1: AccountStatusGet reporta sessão estabelecida
+    let session_up = output.contains("Connection Established");
 
+    // Verificação 2: IP válido na placa (não APIPA) — confirma VPN activa
+    // mesmo que AccountStatusGet ainda não reflicta o estado
     #[cfg(windows)]
-    let local_ip = if connected { get_vpn_ip() } else { None };
+    let local_ip = get_vpn_ip();
     #[cfg(not(windows))]
     let local_ip: Option<String> = None;
+
+    let connected = session_up || local_ip.is_some();
 
     *state.connected.lock().unwrap() = connected;
 
@@ -289,27 +292,31 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         );
     }
 
-    // 3. Limpar adaptadores antigos
-    #[cfg(windows)]
-    cleanup_old_nics();
+    // 3. Criar adaptador apenas se ainda não existe
+    let nic_already = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicList"])
+        .map(|o| o.contains(NIC_NAME))
+        .unwrap_or(false);
 
-    // 4. NicCreate — criar adaptador virtual
-    let nic_out = run_vpncmd(&[
-        "localhost", "/CLIENT", "/CMD", "NicCreate", NIC_NAME,
-    ]).unwrap_or_default();
+    if nic_already {
+        // Placa já existe — não tocar, ir directo para AccountCreate/Connect
+    } else {
+        // Limpar antigos e criar novo adaptador
+        #[cfg(windows)]
+        cleanup_old_nics();
 
-    // Falha real: serviço não responde. "already exists" não é erro.
-    if nic_out.contains("Cannot connect") {
-        return Err(format!(
-            "Falha ao criar adaptador VPN. Serviço não responde: {}",
-            &nic_out[..nic_out.len().min(120)]
-        ));
+        let nic_out = run_vpncmd(&[
+            "localhost", "/CLIENT", "/CMD", "NicCreate", NIC_NAME,
+        ]).unwrap_or_default();
+
+        if nic_out.contains("Cannot connect") {
+            return Err(format!(
+                "Falha ao criar adaptador VPN: {}",
+                &nic_out[..nic_out.len().min(120)]
+            ));
+        }
+
+        let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicEnable", NIC_NAME]);
     }
-
-    // 5. NicEnable — activar adaptador
-    let _ = run_vpncmd(&[
-        "localhost", "/CLIENT", "/CMD", "NicEnable", NIC_NAME,
-    ]);
 
     // 6. AccountCreate — criar conta VPN (ignora erro se já existe)
     let _ = run_vpncmd(&[
