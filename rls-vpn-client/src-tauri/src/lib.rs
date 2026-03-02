@@ -168,16 +168,29 @@ fn cleanup_old_nics() {
 
 #[cfg(windows)]
 fn get_vpn_ip() -> Option<String> {
-    // SoftEther cria o adaptador Windows como "VPN Client Adapter - {nome}"
-    // Tentamos vários formatos possíveis para não falhar por nome errado.
+    // SoftEther cria o adaptador Windows como "VPN Client Adapter - {nome}".
+    // Tentamos nomes específicos e depois fallback por descrição TAP/SoftEther.
     let script = format!(
-        r#"$names = @('{nic}', 'VPN Client Adapter - {nic}', 'VPN - {nic}');
+        r#"
+$names = @('{nic}', 'VPN Client Adapter - {nic}', 'VPN - {nic}')
 foreach ($n in $names) {{
     $ip = Get-NetIPAddress -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue |
           Where-Object {{ $_.IPAddress -notlike '169.254.*' }} |
-          Select-Object -ExpandProperty IPAddress -First 1;
+          Select-Object -ExpandProperty IPAddress -First 1
     if ($ip) {{ Write-Output $ip; exit }}
-}}"#,
+}}
+# Fallback: qualquer adaptador SoftEther ou TAP com IP válido
+Get-NetAdapter -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.InterfaceDescription -like '*SoftEther*' -or
+                  $_.InterfaceDescription -like '*tap0901*' -or
+                  $_.InterfaceDescription -like '*TAP-Windows*' }} |
+  ForEach-Object {{
+    $ip = $_ | Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+               Where-Object {{ $_.IPAddress -notlike '169.254.*' }} |
+               Select-Object -ExpandProperty IPAddress -First 1
+    if ($ip) {{ Write-Output $ip; exit }}
+  }}
+"#,
         nic = NIC_NAME
     );
     let output = Command::new("powershell")
@@ -406,10 +419,17 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
     ])
     .unwrap_or_default();
 
-    // Guardar primeiras 300 chars para diagnóstico no log do frontend
-    let raw_status = output.chars().take(300).collect::<String>()
-        .replace('\n', " | ")
-        .replace('\r', "");
+    // Mostrar a PARTE ÚTIL do output (depois do banner) para diagnóstico.
+    // O banner ocupa ~280 chars; o status real aparece depois.
+    let raw_status = {
+        // Tentar começar no "AccountStatusGet command" ou "Session Status"
+        let start = output.find("AccountStatusGet command")
+            .or_else(|| output.find("Session Status"))
+            .or_else(|| output.find("Connected to VPN Client"))
+            .unwrap_or_else(|| output.len().saturating_sub(500));
+        output[start..].chars().take(500).collect::<String>()
+            .replace('\n', " | ").replace('\r', "")
+    };
 
     // Serviço não responde — mantemos o último estado conhecido de connection_ready
     if output.contains("Cannot connect to VPN Client") {
@@ -441,8 +461,10 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         };
     }
 
-    // Verificação 1: AccountStatusGet — case-insensitive
-    let session_up = lower.contains("connection established");
+    // Verificação 1: AccountStatusGet — vários padrões possíveis do SoftEther 4.42
+    let session_up = lower.contains("connection established")
+        || lower.contains("session status") && !lower.contains("not connected")
+            && !lower.contains("not connect") && lower.contains("connect");
 
     // Verificação 2: IP da placa VPN no Windows
     // SoftEther cria o adaptador como "VPN Client Adapter - {NIC_NAME}"
