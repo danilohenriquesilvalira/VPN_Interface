@@ -146,6 +146,16 @@ body, html, #root {
   padding: 0 16px 16px;
 }
 
+/* Linha com 2 botões lado a lado */
+.btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-row .btn-action {
+  flex: 1;
+}
+
 .btn-action {
   width: 100%;
   padding: 13px;

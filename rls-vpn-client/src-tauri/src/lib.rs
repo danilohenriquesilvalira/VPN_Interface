@@ -68,6 +68,7 @@ fn softether_installed() -> bool {
     find_vpncmd().is_some()
 }
 
+/// Executa vpncmd e devolve stdout + stderr combinados para não perder erros.
 fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     let vpncmd = find_vpncmd()
         .ok_or_else(|| "SoftEther VPN Client não instalado.".to_string())?;
@@ -90,13 +91,12 @@ fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    if stdout.trim().is_empty() && !stderr.trim().is_empty() {
-        Ok(stderr)
-    } else {
-        Ok(stdout)
-    }
+    // Combinar stdout+stderr para não perder mensagens de erro
+    let combined = format!("{}\n{}", stdout, stderr);
+    Ok(combined.trim().to_string())
 }
 
+/// Espera até o serviço SevpnClient responder ao NicList com "The command completed".
 fn wait_for_service_ready(max_secs: u32) -> bool {
     for _ in 0..max_secs {
         if let Ok(out) = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicList"]) {
@@ -213,14 +213,16 @@ fn check_and_install_softether(
     Ok("Componentes VPN instalados com sucesso!".to_string())
 }
 
-/// Passo 1 — Cria a placa de rede virtual e a conta VPN no SoftEther.
-/// Deve ser feito uma só vez (idempotente: ignora se já existir).
+/// Cria a placa de rede virtual e a conta VPN no SoftEther (idempotente).
+/// Aguarda o serviço após NicCreate porque o SevpnClient pode reiniciar
+/// ao inicializar o novo adaptador.
 #[tauri::command]
 fn setup_connection(config: VpnConfig, state: State<VpnState>) -> Result<String, String> {
     if !softether_installed() {
         return Err("SoftEther não instalado. Aguarda a instalação automática.".to_string());
     }
 
+    // Garantir serviço activo
     #[cfg(windows)]
     {
         let _ = Command::new("sc")
@@ -235,8 +237,7 @@ fn setup_connection(config: VpnConfig, state: State<VpnState>) -> Result<String,
 
     if !wait_for_service_ready(30) {
         return Err(
-            "Serviço VPN não iniciou. Instala o SoftEther, reinicia o Windows e tenta de novo."
-                .to_string(),
+            "Serviço VPN não iniciou. Reinicia o Windows e tenta novamente.".to_string(),
         );
     }
 
@@ -257,48 +258,77 @@ fn setup_connection(config: VpnConfig, state: State<VpnState>) -> Result<String,
         if nic_out.contains("Cannot connect") {
             return Err(format!(
                 "Falha ao criar adaptador: {}",
-                &nic_out[..nic_out.len().min(120)]
+                &nic_out[..nic_out.len().min(200)]
             ));
         }
+
+        // O SevpnClient pode reiniciar após NicCreate para inicializar o adaptador.
+        // Aguardar até o serviço estar novamente pronto antes de prosseguir.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if !wait_for_service_ready(30) {
+            return Err(
+                "Serviço VPN não retomou após criar adaptador. Tenta novamente.".to_string(),
+            );
+        }
+
         let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicEnable", NIC_NAME]);
     }
 
-    // Criar conta VPN (ignora erro se já existe)
-    let _ = run_vpncmd(&[
+    // Criar/actualizar conta VPN
+    let acc_out = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountCreate", &config.account_name,
         &format!("/SERVER:{}:{}", config.host, config.port),
         &format!("/HUB:{}", config.hub),
         &format!("/USERNAME:{}", config.username),
         &format!("/NICNAME:{}", NIC_NAME),
-    ]);
+    ])
+    .unwrap_or_default();
 
-    // Definir password
-    let _ = run_vpncmd(&[
+    if acc_out.contains("Cannot connect to VPN Client") {
+        return Err("Serviço VPN não responde ao criar conta. Tenta novamente.".to_string());
+    }
+
+    // Definir password (funciona mesmo se conta já existia)
+    let pw_out = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountPasswordSet", &config.account_name,
         &format!("/PASSWORD:{}", config.password),
         "/TYPE:standard",
-    ]);
+    ])
+    .unwrap_or_default();
+
+    if pw_out.contains("Cannot connect to VPN Client") {
+        return Err("Serviço VPN não responde ao definir password. Tenta novamente.".to_string());
+    }
 
     *state.connection_ready.lock().unwrap() = true;
     Ok("Placa de rede e conta VPN configuradas com sucesso.".to_string())
 }
 
-/// Passo 2 — Liga a conta VPN (AccountConnect).
-/// Requer que setup_connection já tenha sido feito.
+/// Liga a VPN (AccountConnect).
+/// Aguarda o serviço estar pronto antes de tentar ligar.
 #[tauri::command]
 fn connect(config: VpnConfig) -> Result<String, String> {
     if !softether_installed() {
         return Err("SoftEther não instalado.".to_string());
     }
 
+    // Garantir que o serviço está activo
     #[cfg(windows)]
     {
         let _ = Command::new("sc")
             .args(&["start", "SevpnClient"])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
+    }
+
+    // Aguardar o serviço estar realmente pronto (até 15 segundos)
+    // Sem isto o vpncmd imprime o banner em vez de executar o comando
+    if !wait_for_service_ready(15) {
+        return Err(
+            "Serviço VPN não responde. Aguarda alguns segundos e tenta de novo.".to_string(),
+        );
     }
 
     let result = run_vpncmd(&[
@@ -314,11 +344,11 @@ fn connect(config: VpnConfig) -> Result<String, String> {
     } else if result.contains("Cannot connect to VPN Client") {
         Err("Serviço VPN não responde. Aguarda e tenta novamente.".to_string())
     } else {
-        Err(format!("Falha ao ligar: {}", &result[..result.len().min(200)]))
+        Err(format!("Falha ao ligar: {}", &result[..result.len().min(300)]))
     }
 }
 
-/// Desliga a conta VPN (AccountDisconnect).
+/// Desliga a VPN (AccountDisconnect).
 #[tauri::command]
 fn disconnect(config: VpnConfig) -> Result<String, String> {
     let result = run_vpncmd(&[
@@ -337,7 +367,7 @@ fn disconnect(config: VpnConfig) -> Result<String, String> {
     }
 }
 
-/// Lê o estado real do SoftEther via AccountStatusGet e devolve o status preciso.
+/// Lê o estado real do SoftEther via AccountStatusGet.
 #[tauri::command]
 fn get_status(state: State<VpnState>) -> VpnStatus {
     let se_ready = softether_installed();
@@ -359,7 +389,7 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
     ])
     .unwrap_or_default();
 
-    // Serviço não responde
+    // Serviço não responde — mantemos o último estado conhecido de connection_ready
     if output.contains("Cannot connect to VPN Client") {
         return VpnStatus {
             connected: false,
@@ -372,22 +402,22 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
     }
 
     // Conta não existe → precisa de configuração
-    let connection_ready = !output.contains("not found")
-        && !output.trim().is_empty();
+    // "not found" aparece em inglês no SoftEther 4.42
+    let lower = output.to_lowercase();
+    let connection_ready = !lower.contains("not found") && !output.trim().is_empty();
     *state.connection_ready.lock().unwrap() = connection_ready;
 
     if !connection_ready {
         return VpnStatus {
             connected: false,
             local_ip: None,
-            message: "Placa de rede não configurada".to_string(),
+            message: "Conta VPN não configurada".to_string(),
             softether_ready: true,
             connection_ready: false,
             vpn_state: "not_configured".to_string(),
         };
     }
 
-    // Determinar estado da sessão a partir do output do AccountStatusGet
     let vpn_state = if output.contains("Connection Established") {
         "connected"
     } else if output.contains("Connecting") {

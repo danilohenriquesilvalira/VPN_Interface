@@ -21,7 +21,7 @@ interface VpnStatus {
   message: string;
   softether_ready: boolean;
   connection_ready: boolean;
-  vpn_state: string; // "not_installed" | "not_configured" | "disconnected" | "connecting" | "connected"
+  vpn_state: string;
 }
 
 function App() {
@@ -33,8 +33,8 @@ function App() {
     connection_ready: false,
     vpn_state: "not_installed",
   });
-  const [loading, setLoading] = useState(false);
-  const [loadingMsg, setLoadingMsg] = useState("");
+  const [setupLoading, setSetupLoading] = useState(false);
+  const [connectLoading, setConnectLoading] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [logMessages, setLogMessages] = useState<string[]>([]);
@@ -79,56 +79,51 @@ function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Passo 1: cria NIC + conta VPN
+  // Botão 1: Configurar placa de rede + conta VPN
   const handleSetup = async () => {
     if (!config) return;
-    setLoading(true);
-    setLoadingMsg("A configurar placa de rede...");
+    setSetupLoading(true);
     addLog("A criar adaptador de rede e conta VPN...");
     try {
       const msg = await invoke<string>("setup_connection", { config });
       addLog(msg);
       await refreshStatus();
     } catch (e: any) {
-      addLog(`Erro: ${e}`);
+      addLog(`Erro ao configurar: ${e}`);
     } finally {
-      setLoading(false);
-      setLoadingMsg("");
+      setSetupLoading(false);
     }
   };
 
-  // Passo 2: liga (AccountConnect)
+  // Botão 2: Ligar (AccountConnect)
   const handleConnect = async () => {
     if (!config) return;
-    setLoading(true);
-    setLoadingMsg("A ligar...");
+    setConnectLoading(true);
     addLog("A ligar à rede RLS Automação...");
     try {
       const msg = await invoke<string>("connect", { config });
       addLog(msg);
       await refreshStatus();
     } catch (e: any) {
-      addLog(`Erro: ${e}`);
+      addLog(`Erro ao ligar: ${e}`);
     } finally {
-      setLoading(false);
-      setLoadingMsg("");
+      setConnectLoading(false);
     }
   };
 
+  // Botão 2: Desligar (AccountDisconnect)
   const handleDisconnect = async () => {
     if (!config) return;
-    setLoading(true);
-    setLoadingMsg("A desligar...");
+    setConnectLoading(true);
     addLog("A desligar...");
     try {
       const msg = await invoke<string>("disconnect", { config });
       addLog(msg);
       await refreshStatus();
     } catch (e: any) {
-      addLog(`Erro: ${e}`);
+      addLog(`Erro ao desligar: ${e}`);
     } finally {
-      setLoading(false);
-      setLoadingMsg("");
+      setConnectLoading(false);
     }
   };
 
@@ -140,7 +135,6 @@ function App() {
     }
   };
 
-  // Classe e rótulo do status card baseados no estado real do SoftEther
   const statusClass =
     status.vpn_state === "connected" ? "connected"
     : status.vpn_state === "connecting" ? "connecting"
@@ -174,12 +168,12 @@ function App() {
         <div className="version">v1.0.0</div>
       </div>
 
-      {/* STATUS CARD — reflecte o estado real do SoftEther */}
+      {/* STATUS CARD — estado real do SoftEther */}
       <div className={`status-card ${statusClass}`}>
         <div className="status-icon">
           {status.vpn_state === "connected"
-            ? <Wifi size={52} color={statusIconColor} />
-            : <WifiOff size={52} color={statusIconColor} />}
+            ? <Wifi size={48} color={statusIconColor} />
+            : <WifiOff size={48} color={statusIconColor} />}
         </div>
         <div className="status-text">{statusLabel}</div>
         <div className="status-sub">{status.message}</div>
@@ -193,52 +187,61 @@ function App() {
         )}
       </div>
 
-      {/* ÁREA DE ACÇÃO — botão correcto para cada estado */}
+      {/* ÁREA DE ACÇÃO — 2 botões independentes */}
       <div className="action-area">
         {installing ? (
-          <button className="btn-action btn-loading" disabled>
-            <Loader size={18} className="spin" />
-            A instalar componentes VPN...
-          </button>
-
-        ) : loading ? (
-          <button className="btn-action btn-loading" disabled>
-            <Loader size={18} className="spin" />
-            {loadingMsg}
-          </button>
-
+          <div className="btn-row">
+            <button className="btn-action btn-loading" disabled style={{ flex: 1 }}>
+              <Loader size={16} className="spin" />
+              A instalar componentes VPN...
+            </button>
+          </div>
         ) : !status.softether_ready ? (
-          <button className="btn-action btn-loading" disabled>
-            SoftEther não disponível
-          </button>
-
-        ) : !status.connection_ready ? (
-          /* PASSO 1: criar placa de rede + conta */
-          <button className="btn-action btn-setup" onClick={handleSetup}>
-            <Network size={18} />
-            Configurar Placa de Rede VPN
-          </button>
-
-        ) : status.vpn_state === "connecting" ? (
-          /* Estado intermédio do SoftEther */
-          <button className="btn-action btn-loading" disabled>
-            <Loader size={18} className="spin" />
-            A estabelecer ligação...
-          </button>
-
-        ) : status.connected ? (
-          /* PASSO 3: desligar */
-          <button className="btn-action btn-disconnect" onClick={handleDisconnect}>
-            <ShieldOff size={18} />
-            Desligar
-          </button>
-
+          <div className="btn-row">
+            <button className="btn-action btn-loading" disabled style={{ flex: 1 }}>
+              SoftEther não disponível
+            </button>
+          </div>
         ) : (
-          /* PASSO 2: ligar */
-          <button className="btn-action btn-connect" onClick={handleConnect}>
-            <Shield size={18} />
-            Ligar
-          </button>
+          <div className="btn-row">
+            {/* Botão 1: Configurar (sempre visível quando SoftEther pronto) */}
+            {setupLoading ? (
+              <button className="btn-action btn-loading" disabled>
+                <Loader size={16} className="spin" />
+                A configurar...
+              </button>
+            ) : (
+              <button className="btn-action btn-setup" onClick={handleSetup} disabled={connectLoading}>
+                <Network size={16} />
+                Configurar
+              </button>
+            )}
+
+            {/* Botão 2: Ligar / Desligar (visível quando configurado) */}
+            {status.connection_ready && (
+              connectLoading ? (
+                <button className="btn-action btn-loading" disabled>
+                  <Loader size={16} className="spin" />
+                  {status.connected ? "A desligar..." : "A ligar..."}
+                </button>
+              ) : status.vpn_state === "connecting" ? (
+                <button className="btn-action btn-loading" disabled>
+                  <Loader size={16} className="spin" />
+                  A ligar...
+                </button>
+              ) : status.connected ? (
+                <button className="btn-action btn-disconnect" onClick={handleDisconnect} disabled={setupLoading}>
+                  <ShieldOff size={16} />
+                  Desligar
+                </button>
+              ) : (
+                <button className="btn-action btn-connect" onClick={handleConnect} disabled={setupLoading}>
+                  <Shield size={16} />
+                  Ligar
+                </button>
+              )
+            )}
+          </div>
         )}
       </div>
 
