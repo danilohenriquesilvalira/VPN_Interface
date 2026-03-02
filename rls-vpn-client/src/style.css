@@ -42,13 +42,10 @@ html, body, #app {
 
 .logo { display: flex; align-items: center; gap: 10px; }
 
-.logo-icon {
-  background: rgba(0,212,255,.1);
-  border: 1px solid rgba(0,212,255,.3);
-  border-radius: 8px;
-  padding: 6px;
-  display: flex;
-  align-items: center;
+.logo-img {
+  height: 38px;
+  width: auto;
+  object-fit: contain;
 }
 
 .logo-title { font-size: 15px; font-weight: 700; }

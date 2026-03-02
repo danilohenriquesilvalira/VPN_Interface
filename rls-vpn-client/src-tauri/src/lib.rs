@@ -48,6 +48,8 @@ pub struct VpnStatus {
     pub connection_ready: bool,
     /// "not_installed" | "not_configured" | "disconnected" | "connecting" | "connected"
     pub vpn_state: String,
+    /// Output bruto do AccountStatusGet (para diagnóstico no log)
+    pub raw_status: String,
 }
 
 fn find_vpncmd() -> Option<PathBuf> {
@@ -166,16 +168,30 @@ fn cleanup_old_nics() {
 
 #[cfg(windows)]
 fn get_vpn_ip() -> Option<String> {
+    // SoftEther cria o adaptador Windows como "VPN Client Adapter - {nome}"
+    // Tentamos vários formatos possíveis para não falhar por nome errado.
     let script = format!(
-        "Get-NetIPAddress -InterfaceAlias '{}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress",
-        NIC_NAME
+        r#"$names = @('{nic}', 'VPN Client Adapter - {nic}', 'VPN - {nic}');
+foreach ($n in $names) {{
+    $ip = Get-NetIPAddress -InterfaceAlias $n -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+          Where-Object {{ $_.IPAddress -notlike '169.254.*' }} |
+          Select-Object -ExpandProperty IPAddress -First 1;
+    if ($ip) {{ Write-Output $ip; exit }}
+}}"#,
+        nic = NIC_NAME
     );
     let output = Command::new("powershell")
         .args(&["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
-    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let ip = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
     if ip.is_empty() || ip.starts_with("169.254") {
         None
     } else {
@@ -367,7 +383,7 @@ fn disconnect(config: VpnConfig) -> Result<String, String> {
     }
 }
 
-/// Lê o estado real do SoftEther via AccountStatusGet.
+/// Lê o estado real do SoftEther via AccountStatusGet + IP da placa.
 #[tauri::command]
 fn get_status(state: State<VpnState>) -> VpnStatus {
     let se_ready = softether_installed();
@@ -381,6 +397,7 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
             softether_ready: false,
             connection_ready: false,
             vpn_state: "not_installed".to_string(),
+            raw_status: String::new(),
         };
     }
 
@@ -388,6 +405,11 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         "localhost", "/CLIENT", "/CMD", "AccountStatusGet", NIC_NAME,
     ])
     .unwrap_or_default();
+
+    // Guardar primeiras 300 chars para diagnóstico no log do frontend
+    let raw_status = output.chars().take(300).collect::<String>()
+        .replace('\n', " | ")
+        .replace('\r', "");
 
     // Serviço não responde — mantemos o último estado conhecido de connection_ready
     if output.contains("Cannot connect to VPN Client") {
@@ -398,11 +420,11 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
             softether_ready: true,
             connection_ready: *state.connection_ready.lock().unwrap(),
             vpn_state: "disconnected".to_string(),
+            raw_status,
         };
     }
 
     // Conta não existe → precisa de configuração
-    // "not found" aparece em inglês no SoftEther 4.42
     let lower = output.to_lowercase();
     let connection_ready = !lower.contains("not found") && !output.trim().is_empty();
     *state.connection_ready.lock().unwrap() = connection_ready;
@@ -415,33 +437,36 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
             softether_ready: true,
             connection_ready: false,
             vpn_state: "not_configured".to_string(),
+            raw_status,
         };
     }
 
-    let session_up = output.contains("Connection Established");
+    // Verificação 1: AccountStatusGet — case-insensitive
+    let session_up = lower.contains("connection established");
 
-    // Verificação secundária via IP da placa: se o adaptador VPN tem IP válido
-    // (não APIPA) a ligação está activa mesmo que AccountStatusGet ainda não
-    // reporte "Connection Established" (pode haver atraso de alguns segundos).
+    // Verificação 2: IP da placa VPN no Windows
+    // SoftEther cria o adaptador como "VPN Client Adapter - {NIC_NAME}"
+    // get_vpn_ip() tenta vários formatos de nome
     #[cfg(windows)]
     let local_ip = get_vpn_ip();
     #[cfg(not(windows))]
     let local_ip: Option<String> = None;
 
+    // Ligado se qualquer das verificações confirmar
     let connected = session_up || local_ip.is_some();
 
     let vpn_state = if connected {
         "connected"
-    } else if output.contains("Connecting") {
+    } else if lower.contains("connecting") {
         "connecting"
     } else {
         "disconnected"
     };
 
     let message = match vpn_state {
-        "connected" => "Ligado à rede RLS Automação".to_string(),
+        "connected"  => "Ligado à rede RLS Automação".to_string(),
         "connecting" => "A estabelecer ligação...".to_string(),
-        _ => "Pronto para ligar".to_string(),
+        _            => "Pronto para ligar".to_string(),
     };
 
     VpnStatus {
@@ -451,6 +476,7 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         softether_ready: true,
         connection_ready: true,
         vpn_state: vpn_state.to_string(),
+        raw_status,
     }
 }
 

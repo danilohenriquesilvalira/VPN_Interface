@@ -2,7 +2,8 @@ import { invoke } from '@tauri-apps/api/core';
 
 // ─── estado global ────────────────────────────────────────────────────────────
 let config  = null;
-let status  = { softether_ready: false, connection_ready: false, connected: false, vpn_state: 'not_installed', message: 'A iniciar...' };
+let status  = { softether_ready: false, connection_ready: false, connected: false, vpn_state: 'not_installed', message: 'A iniciar...', raw_status: '' };
+let lastRaw = '';
 let installing   = false;
 let setupBusy    = false;
 let connectBusy  = false;
@@ -94,6 +95,12 @@ async function refreshStatus() {
   try {
     status = await invoke('get_status');
     render();
+    // Mostrar raw_status no log apenas quando muda — ajuda a diagnosticar
+    // o que o SoftEther realmente retorna nesta máquina
+    if (status.raw_status && status.raw_status !== lastRaw) {
+      lastRaw = status.raw_status;
+      addLog('[DEBUG vpncmd] ' + status.raw_status);
+    }
   } catch (_) {}
 }
 
