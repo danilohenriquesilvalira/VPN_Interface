@@ -66,11 +66,11 @@ function App() {
   const handleConnect = async () => {
     if (!config) return;
     setLoading(true);
-    addLog("A ligar à rede RLS Automação...");
+    addLog("A criar adaptador e ligar à rede RLS...");
     try {
       const msg = await invoke<string>("connect", { config });
       addLog(msg);
-      setStatus(prev => ({ ...prev, connected: true, message: "Ligado à rede RLS" }));
+      // Não definir status manualmente — o polling get_status() confirma o estado real
     } catch (e: any) {
       addLog(`Erro: ${e}`);
     } finally {

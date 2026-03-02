@@ -9,8 +9,8 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-// Nome do adaptador virtual — aparece no Painel de Controlo de Rede
-const NIC_NAME: &str = "RLS Automacao";
+// Nome sem espaços — evita qualquer problema de parsing no vpncmd
+const NIC_NAME: &str = "RLS_Automacao";
 
 struct VpnState {
     connected: Mutex<bool>,
@@ -66,6 +66,53 @@ fn softether_installed() -> bool {
     find_vpncmd().is_some()
 }
 
+// Executa vpncmd e devolve stdout+stderr combinados.
+// stdin = null para evitar que vpncmd fique à espera de input interactivo.
+fn run_vpncmd(args: &[&str]) -> Result<String, String> {
+    let vpncmd = find_vpncmd()
+        .ok_or_else(|| "SoftEther VPN Client não instalado.".to_string())?;
+
+    #[cfg(windows)]
+    let output = Command::new(&vpncmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
+
+    #[cfg(not(windows))]
+    let output = Command::new(&vpncmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    // Devolve stderr se stdout vazio (vpncmd às vezes usa stderr)
+    if stdout.trim().is_empty() && !stderr.trim().is_empty() {
+        Ok(stderr)
+    } else {
+        Ok(stdout)
+    }
+}
+
+// Aguarda o serviço SevpnClient estar REALMENTE pronto.
+// "The command completed" no output de NicList confirma que o serviço responde.
+// Output não-vazio NÃO chega — "Cannot connect to VPN Client Service" é não-vazio mas indica falha.
+fn wait_for_service_ready(max_secs: u32) -> bool {
+    for _ in 0..max_secs {
+        if let Ok(out) = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicList"]) {
+            if out.contains("The command completed") {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    false
+}
+
 fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let installer_path = app_handle
         .path()
@@ -81,6 +128,7 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
     {
         let status = Command::new(&installer_path)
             .args(&["/SILENT", "/NORESTART"])
+            .stdin(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
             .status()
             .map_err(|e| format!("Erro ao iniciar installer: {}", e))?;
@@ -90,15 +138,20 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
         }
     }
 
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(4));
 
     #[cfg(windows)]
     {
+        // Configurar serviço para arranque automático e iniciar
+        let _ = Command::new("sc")
+            .args(&["config", "SevpnClient", "start=auto"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
         let _ = Command::new("sc")
             .args(&["start", "SevpnClient"])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(3));
     }
 
     if softether_installed() {
@@ -108,64 +161,16 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
     }
 }
 
-// Aguarda o serviço SevpnClient ficar pronto para receber comandos.
-// Tenta NicList repetidamente até obter resposta (máx. max_secs segundos).
-fn wait_for_service_ready(max_secs: u32) -> bool {
-    for _ in 0..max_secs {
-        if let Ok(out) = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicList"]) {
-            if !out.is_empty() {
-                return true;
-            }
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-    false
-}
-
-fn run_vpncmd(args: &[&str]) -> Result<String, String> {
-    let vpncmd = find_vpncmd()
-        .ok_or_else(|| "SoftEther VPN Client não instalado.".to_string())?;
-
-    #[cfg(windows)]
-    let output = Command::new(&vpncmd)
-        .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
-
-    #[cfg(not(windows))]
-    let output = Command::new(&vpncmd)
-        .args(args)
-        .output()
-        .map_err(|e| format!("Erro ao executar vpncmd: {}", e))?;
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-// Remover adaptadores SoftEther antigos/órfãos (ex: "VPN", "VPN Client", "VPN RLS Automacao")
+// Remover adaptadores SoftEther antigos/órfãos antes de criar o novo
 #[cfg(windows)]
 fn cleanup_old_nics() {
-    let old_names = ["VPN", "VPN Client", "VPN RLS Automacao"];
+    let old_names = ["VPN", "VPN Client", "VPN RLS Automacao", "RLS Automacao"];
     for name in &old_names {
         let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicDelete", name]);
     }
 }
 
-// Renomear adaptador virtual para NIC_NAME via PowerShell
-#[cfg(windows)]
-fn rename_nic() {
-    // Tenta renomear de qualquer nome que o SoftEther tenha criado
-    let script = format!(
-        "Get-NetAdapter | Where-Object {{ $_.InterfaceDescription -like '*SoftEther*' -or $_.Name -eq 'VPN' -or $_.Name -eq 'VPN Client' }} | Rename-NetAdapter -NewName '{}'",
-        NIC_NAME
-    );
-    let _ = Command::new("powershell")
-        .args(&["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output();
-}
-
-// Obter IP do adaptador "VPN RLS Automacao" — dinâmico, qualquer rede
+// Obter IP do adaptador VPN pelo nome definido em NIC_NAME
 #[cfg(windows)]
 fn get_vpn_ip() -> Option<String> {
     let script = format!(
@@ -196,8 +201,20 @@ fn check_and_install_softether(
     state: State<VpnState>,
 ) -> Result<String, String> {
     if softether_installed() {
+        // Garantir serviço em auto-start e activo
+        #[cfg(windows)]
+        {
+            let _ = Command::new("sc")
+                .args(&["config", "SevpnClient", "start=auto"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+            let _ = Command::new("sc")
+                .args(&["start", "SevpnClient"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output();
+        }
         *state.softether_ready.lock().unwrap() = true;
-        return Ok("Componentes VPN já instalados.".to_string());
+        return Ok("Componentes VPN prontos.".to_string());
     }
     install_softether_silent(&app_handle)?;
     *state.softether_ready.lock().unwrap() = true;
@@ -222,8 +239,9 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         "localhost", "/CLIENT", "/CMD", "AccountStatusGet", "RLS_Automacao",
     ]).unwrap_or_default();
 
-    let connected = output.contains("Connection Established")
-        || output.contains("Connected");
+    // Só "Connection Established" confirma ligação real.
+    // NÃO usar "Connected" — é substring de "Disconnected".
+    let connected = output.contains("Connection Established");
 
     #[cfg(windows)]
     let local_ip = if connected { get_vpn_ip() } else { None };
@@ -250,39 +268,50 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         return Err("Componentes VPN não instalados. Aguarda a instalação automática.".to_string());
     }
 
-    // Garantir serviço activo e aguardar estar pronto (até 30 segundos)
+    // 1. Configurar serviço para auto-start e iniciar
     #[cfg(windows)]
     {
+        let _ = Command::new("sc")
+            .args(&["config", "SevpnClient", "start=auto"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
         let _ = Command::new("sc")
             .args(&["start", "SevpnClient"])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
     }
+
+    // 2. Aguardar o serviço estar REALMENTE pronto (até 30 segundos)
+    // Detecta quando NicList responde com "The command completed"
     if !wait_for_service_ready(30) {
-        return Err("SoftEther VPN Client não respondeu. Reinicia a aplicação e tenta novamente.".to_string());
+        return Err(
+            "Serviço VPN não iniciou. Instala o SoftEther, reinicia o Windows e tenta de novo.".to_string()
+        );
     }
 
-    // Limpar adaptadores antigos/órfãos do SoftEther
+    // 3. Limpar adaptadores antigos
     #[cfg(windows)]
     cleanup_old_nics();
 
-    // Criar adaptador virtual com nome RLS (ignora erro se já existe)
-    let nic_result = run_vpncmd(&[
-        "localhost", "/CLIENT", "/CMD",
-        "NicCreate", NIC_NAME,
-    ]);
-    if let Err(ref e) = nic_result {
-        // Não é fatal — pode já existir
-        let _ = e;
+    // 4. NicCreate — criar adaptador virtual
+    let nic_out = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD", "NicCreate", NIC_NAME,
+    ]).unwrap_or_default();
+
+    // Falha real: serviço não responde. "already exists" não é erro.
+    if nic_out.contains("Cannot connect") {
+        return Err(format!(
+            "Falha ao criar adaptador VPN. Serviço não responde: {}",
+            &nic_out[..nic_out.len().min(120)]
+        ));
     }
 
-    // Activar adaptador explicitamente
+    // 5. NicEnable — activar adaptador
     let _ = run_vpncmd(&[
-        "localhost", "/CLIENT", "/CMD",
-        "NicEnable", NIC_NAME,
+        "localhost", "/CLIENT", "/CMD", "NicEnable", NIC_NAME,
     ]);
 
-    // Criar conta apontada para o adaptador RLS
+    // 6. AccountCreate — criar conta VPN (ignora erro se já existe)
     let _ = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountCreate", &config.account_name,
@@ -292,7 +321,7 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         &format!("/NICNAME:{}", NIC_NAME),
     ]);
 
-    // Definir password
+    // 7. AccountPasswordSet — definir password
     let _ = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountPasswordSet", &config.account_name,
@@ -300,24 +329,22 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         "/TYPE:standard",
     ]);
 
-    // Ligar
+    // 8. AccountConnect — ligar
     let result = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountConnect", &config.account_name,
-    ])?;
+    ]).unwrap_or_default();
 
-    // Renomear adaptador após ligar (garante nome correcto no Painel de Rede)
-    #[cfg(windows)]
-    rename_nic();
-
-    if result.contains("completed successfully") || result.contains("The command completed") {
+    if result.contains("The command completed successfully") {
         *state.connected.lock().unwrap() = true;
-        Ok("Ligado com sucesso à rede RLS Automação!".to_string())
+        Ok("Adaptador criado. Ligado com sucesso à rede RLS Automação!".to_string())
     } else if result.contains("already") {
         *state.connected.lock().unwrap() = true;
         Ok("Já está ligado à rede RLS Automação.".to_string())
+    } else if result.contains("Cannot connect") {
+        Err("Serviço VPN não responde. Reinicia o Windows e tenta novamente.".to_string())
     } else {
-        Err(format!("Erro: {}", result.trim()))
+        Err(format!("Falha ao ligar: {}", &result[..result.len().min(200)]))
     }
 }
 
@@ -331,7 +358,7 @@ fn disconnect(config: VpnConfig, state: State<VpnState>) -> Result<String, Strin
     Ok("Desligado com sucesso.".to_string())
 }
 
-// Limpeza completa para testes — remove conta e adaptador
+// Reset completo — remove conta e adaptador
 #[tauri::command]
 fn clean_reset(config: VpnConfig) -> Result<String, String> {
     let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "AccountDisconnect", &config.account_name]);
