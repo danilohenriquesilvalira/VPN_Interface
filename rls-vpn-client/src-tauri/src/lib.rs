@@ -9,6 +9,9 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+// Nome do adaptador virtual — aparece no Painel de Controlo de Rede
+const NIC_NAME: &str = "VPN RLS Automacao";
+
 struct VpnState {
     connected: Mutex<bool>,
     softether_ready: Mutex<bool>,
@@ -45,7 +48,6 @@ pub struct VpnStatus {
     pub softether_ready: bool,
 }
 
-// Localizar vpncmd.exe no sistema
 fn find_vpncmd() -> Option<PathBuf> {
     let paths = [
         "C:\\Program Files\\SoftEther VPN Client\\vpncmd.exe",
@@ -60,14 +62,11 @@ fn find_vpncmd() -> Option<PathBuf> {
     None
 }
 
-// Verificar se SoftEther Client está instalado
 fn softether_installed() -> bool {
     find_vpncmd().is_some()
 }
 
-// Instalar SoftEther VPN Client silenciosamente a partir do installer bundled
 fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    // Encontrar o installer bundled com a app
     let installer_path = app_handle
         .path()
         .resource_dir()
@@ -78,7 +77,6 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
         return Err("Installer SoftEther não encontrado nos resources da app.".to_string());
     }
 
-    // Instalar silenciosamente (requer admin — o utilizador verá UAC uma vez)
     #[cfg(windows)]
     {
         let status = Command::new(&installer_path)
@@ -92,10 +90,8 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
         }
     }
 
-    // Aguardar serviço ficar activo
     std::thread::sleep(std::time::Duration::from_secs(3));
 
-    // Iniciar serviço
     #[cfg(windows)]
     {
         let _ = Command::new("sc")
@@ -112,7 +108,6 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
     }
 }
 
-// Executar vpncmd sem janelas
 fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     let vpncmd = find_vpncmd()
         .ok_or_else(|| "SoftEther VPN Client não instalado.".to_string())?;
@@ -133,21 +128,38 @@ fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+// Renomear adaptador virtual para "VPN RLS Automacao" via PowerShell
+#[cfg(windows)]
+fn rename_nic() {
+    // Tenta renomear de qualquer nome que o SoftEther tenha criado
+    let script = format!(
+        "Get-NetAdapter | Where-Object {{ $_.InterfaceDescription -like '*SoftEther*' -or $_.Name -eq 'VPN' }} | Rename-NetAdapter -NewName '{}'",
+        NIC_NAME
+    );
+    let _ = Command::new("powershell")
+        .args(&["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+}
+
+// Obter IP do adaptador "VPN RLS Automacao" — dinâmico, qualquer rede
 #[cfg(windows)]
 fn get_vpn_ip() -> Option<String> {
-    let output = Command::new("ipconfig")
+    let script = format!(
+        "Get-NetIPAddress -InterfaceAlias '{}' -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty IPAddress",
+        NIC_NAME
+    );
+    let output = Command::new("powershell")
+        .args(&["-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    for line in text.lines() {
-        if line.contains("192.168.222") && line.contains("IPv4") {
-            if let Some(ip) = line.split(':').last() {
-                return Some(ip.trim().to_string());
-            }
-        }
+    let ip = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if ip.is_empty() || ip.starts_with("169.254") {
+        None
+    } else {
+        Some(ip)
     }
-    None
 }
 
 #[tauri::command]
@@ -162,12 +174,11 @@ fn check_and_install_softether(
 ) -> Result<String, String> {
     if softether_installed() {
         *state.softether_ready.lock().unwrap() = true;
-        return Ok("SoftEther VPN Client já instalado.".to_string());
+        return Ok("Componentes VPN já instalados.".to_string());
     }
-
     install_softether_silent(&app_handle)?;
     *state.softether_ready.lock().unwrap() = true;
-    Ok("SoftEther VPN Client instalado com sucesso!".to_string())
+    Ok("Componentes VPN instalados com sucesso!".to_string())
 }
 
 #[tauri::command]
@@ -226,14 +237,20 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
-    // Criar conta (ignora erro se já existe)
+    // Criar adaptador virtual com nome RLS (ignora erro se já existe)
+    let _ = run_vpncmd(&[
+        "localhost", "/CLIENT", "/CMD",
+        "NicCreate", NIC_NAME,
+    ]);
+
+    // Criar conta apontada para o adaptador RLS
     let _ = run_vpncmd(&[
         "localhost", "/CLIENT", "/CMD",
         "AccountCreate", &config.account_name,
         &format!("/SERVER:{}:{}", config.host, config.port),
         &format!("/HUB:{}", config.hub),
         &format!("/USERNAME:{}", config.username),
-        "/NICNAME:VPN",
+        &format!("/NICNAME:{}", NIC_NAME),
     ]);
 
     // Definir password
@@ -249,6 +266,10 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         "localhost", "/CLIENT", "/CMD",
         "AccountConnect", &config.account_name,
     ])?;
+
+    // Renomear adaptador após ligar (garante nome correcto no Painel de Rede)
+    #[cfg(windows)]
+    rename_nic();
 
     if result.contains("completed successfully") || result.contains("The command completed") {
         *state.connected.lock().unwrap() = true;
@@ -271,6 +292,15 @@ fn disconnect(config: VpnConfig, state: State<VpnState>) -> Result<String, Strin
     Ok("Desligado com sucesso.".to_string())
 }
 
+// Limpeza completa para testes — remove conta e adaptador
+#[tauri::command]
+fn clean_reset(config: VpnConfig) -> Result<String, String> {
+    let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "AccountDisconnect", &config.account_name]);
+    let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "AccountDelete", &config.account_name]);
+    let _ = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicDelete", NIC_NAME]);
+    Ok("Reset completo. Adaptador e conta removidos.".to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -285,6 +315,7 @@ pub fn run() {
             connect,
             disconnect,
             check_and_install_softether,
+            clean_reset,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

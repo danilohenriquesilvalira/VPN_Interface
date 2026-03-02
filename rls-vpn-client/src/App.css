@@ -272,6 +272,21 @@ body, html, #root {
   background: rgba(0, 212, 255, 0.25);
 }
 
+.btn-reset {
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 68, 102, 0.08);
+  border: 1px solid rgba(255, 68, 102, 0.25);
+  color: #ff4466;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-reset:hover {
+  background: rgba(255, 68, 102, 0.18);
+}
+
 /* LOG */
 .log-panel {
   margin: 0 16px 12px;

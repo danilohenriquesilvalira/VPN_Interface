@@ -128,7 +128,9 @@ function App() {
         <div className="status-sub">{status.message}</div>
         {status.connected && (
           <div className="network-info">
-            <span className="badge">192.168.222.x</span>
+            {status.local_ip
+              ? <span className="badge">{status.local_ip}</span>
+              : <span className="badge">A obter IP...</span>}
             <span className="badge">Layer 2</span>
           </div>
         )}
@@ -200,6 +202,14 @@ function App() {
             <input type="password" value={editConfig.password} onChange={e => setEditConfig({ ...editConfig, password: e.target.value })} />
           </div>
           <button className="btn-save" onClick={saveSettings}>Guardar</button>
+          <button className="btn-reset" onClick={async () => {
+            if (!config) return;
+            addLog("A fazer reset completo...");
+            try {
+              const msg = await invoke<string>("clean_reset", { config });
+              addLog(msg);
+            } catch (e: any) { addLog(`Erro: ${e}`); }
+          }}>Limpar instalação (reset)</button>
         </div>
       )}
 
