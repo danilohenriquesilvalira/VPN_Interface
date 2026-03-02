@@ -108,6 +108,20 @@ fn install_softether_silent(app_handle: &tauri::AppHandle) -> Result<(), String>
     }
 }
 
+// Aguarda o serviço SevpnClient ficar pronto para receber comandos.
+// Tenta NicList repetidamente até obter resposta (máx. max_secs segundos).
+fn wait_for_service_ready(max_secs: u32) -> bool {
+    for _ in 0..max_secs {
+        if let Ok(out) = run_vpncmd(&["localhost", "/CLIENT", "/CMD", "NicList"]) {
+            if !out.is_empty() {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    false
+}
+
 fn run_vpncmd(args: &[&str]) -> Result<String, String> {
     let vpncmd = find_vpncmd()
         .ok_or_else(|| "SoftEther VPN Client não instalado.".to_string())?;
@@ -236,14 +250,16 @@ fn connect(config: VpnConfig, state: State<VpnState>) -> Result<String, String> 
         return Err("Componentes VPN não instalados. Aguarda a instalação automática.".to_string());
     }
 
-    // Garantir serviço activo
+    // Garantir serviço activo e aguardar estar pronto (até 30 segundos)
     #[cfg(windows)]
     {
         let _ = Command::new("sc")
             .args(&["start", "SevpnClient"])
             .creation_flags(CREATE_NO_WINDOW)
             .output();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    if !wait_for_service_ready(30) {
+        return Err("SoftEther VPN Client não respondeu. Reinicia a aplicação e tenta novamente.".to_string());
     }
 
     // Limpar adaptadores antigos/órfãos do SoftEther
