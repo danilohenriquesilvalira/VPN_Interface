@@ -418,20 +418,25 @@ fn get_status(state: State<VpnState>) -> VpnStatus {
         };
     }
 
-    let vpn_state = if output.contains("Connection Established") {
+    let session_up = output.contains("Connection Established");
+
+    // Verificação secundária via IP da placa: se o adaptador VPN tem IP válido
+    // (não APIPA) a ligação está activa mesmo que AccountStatusGet ainda não
+    // reporte "Connection Established" (pode haver atraso de alguns segundos).
+    #[cfg(windows)]
+    let local_ip = get_vpn_ip();
+    #[cfg(not(windows))]
+    let local_ip: Option<String> = None;
+
+    let connected = session_up || local_ip.is_some();
+
+    let vpn_state = if connected {
         "connected"
     } else if output.contains("Connecting") {
         "connecting"
     } else {
         "disconnected"
     };
-
-    let connected = vpn_state == "connected";
-
-    #[cfg(windows)]
-    let local_ip = if connected { get_vpn_ip() } else { None };
-    #[cfg(not(windows))]
-    let local_ip: Option<String> = None;
 
     let message = match vpn_state {
         "connected" => "Ligado à rede RLS Automação".to_string(),

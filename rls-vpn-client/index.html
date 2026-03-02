@@ -1,14 +1,78 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
-  </head>
+<html lang="pt">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RLS Automação VPN</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
 
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+    <header class="header">
+      <div class="logo">
+        <div class="logo-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00d4ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          </svg>
+        </div>
+        <div>
+          <div class="logo-title">RLS Automação</div>
+          <div class="logo-sub">VPN Secure Connect</div>
+        </div>
+      </div>
+      <span class="version">v1.0.0</span>
+    </header>
+
+    <section class="status-card disconnected" id="status-card">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="status-label" id="status-label">DESLIGADO</div>
+      <div class="status-msg" id="status-msg">A iniciar...</div>
+      <div class="badge-row" id="badge-row" hidden>
+        <span class="badge" id="ip-badge">—</span>
+        <span class="badge">Layer 2</span>
+      </div>
+    </section>
+
+    <div class="actions">
+      <button class="btn btn-setup" id="btn-setup" disabled>Configurar</button>
+      <button class="btn btn-connect" id="btn-connect" hidden>Ligar</button>
+    </div>
+
+    <div class="info">
+      <div class="info-row">
+        <span class="lbl">Servidor</span>
+        <span class="val" id="info-server">—</span>
+      </div>
+      <div class="info-row">
+        <span class="lbl">Utilizador</span>
+        <span class="val" id="info-user">—</span>
+      </div>
+      <div class="info-row">
+        <span class="lbl">Conta VPN</span>
+        <span class="val" id="info-account">—</span>
+      </div>
+    </div>
+
+    <button class="settings-toggle" id="settings-toggle" aria-expanded="false">
+      ⚙ Configurações avançadas ▾
+    </button>
+
+    <div class="settings-panel" id="settings-panel" hidden>
+      <div class="field"><label>Servidor</label><input id="set-host" /></div>
+      <div class="field"><label>Porta</label><input id="set-port" type="number" /></div>
+      <div class="field"><label>Hub</label><input id="set-hub" /></div>
+      <div class="field"><label>Utilizador</label><input id="set-user" /></div>
+      <div class="field"><label>Password</label><input id="set-password" type="password" /></div>
+      <button class="btn-save" id="btn-save">Guardar</button>
+      <button class="btn-danger" id="btn-reset">Limpar instalação (reset)</button>
+    </div>
+
+    <div class="log" id="log" hidden></div>
+
+    <footer class="footer">RLS Automação © 2026 · Todos os direitos reservados</footer>
+
+  </div>
+  <script type="module" src="/src/main.js"></script>
+</body>
 </html>
